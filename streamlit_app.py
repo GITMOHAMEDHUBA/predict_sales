@@ -1,73 +1,87 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 from statsmodels.tsa.arima.model import ARIMA
 from datetime import timedelta
 
-# Title
-st.title("📈 Forecasting with ARIMA")
-st.write("Upload your time series data and forecast future values using the ARIMA model.")
+st.title("📈 Prévision des Ventes avec ARIMA")
+st.write("Chargez un fichier contenant une colonne de date et une colonne de valeurs pour effectuer une prévision ARIMA.")
 
-# Upload file (supports CSV, Excel, and TXT)
-uploaded_file = st.file_uploader("Upload a file", type=["csv", "xls", "xlsx", "txt"])
+uploaded_file = st.file_uploader("📂 Charger un fichier (CSV, Excel, ou TXT)", type=["csv", "xls", "xlsx", "txt"])
 
 if uploaded_file:
+    # Lire le fichier
     file_name = uploaded_file.name.lower()
-    
     if file_name.endswith(".csv") or file_name.endswith(".txt"):
         data = pd.read_csv(uploaded_file)
-    elif file_name.endswith((".xls", ".xlsx")):
-        data = pd.read_excel(uploaded_file)
     else:
-        st.error("Unsupported file type.")
-        st.stop()
+        data = pd.read_excel(uploaded_file)
 
-    st.subheader("📋 Uploaded Data Preview")
+    st.subheader("📋 Aperçu des Données")
     st.write(data.head())
 
-    # Let user choose the date and sales columns
-    st.subheader("🛠️ Select Columns")
+    # Choisir les colonnes
+    st.subheader("🛠️ Sélection des Colonnes")
     columns = list(data.columns)
-    date_col = st.selectbox("Select the column representing **Date**", columns)
-    value_col = st.selectbox("Select the column representing **Sales/Values**", columns)
+    date_col = st.selectbox("Colonne de Date", columns)
+    value_col = st.selectbox("Colonne de Valeurs (Montant, Ventes, etc.)", columns)
 
     try:
-        # Convert and prepare data
         data[date_col] = pd.to_datetime(data[date_col])
-        data = data[[date_col, value_col]].sort_values(by=date_col)
-        data.set_index(date_col, inplace=True)
+        data = data[[date_col, value_col]].dropna()
+        data = data.rename(columns={date_col: "Date", value_col: "Valeur"})
+        data = data.set_index("Date")
+        monthly_data = data.resample("M").sum()
 
-        # Plot original data
-        st.subheader("📊 Historical Data")
-        st.line_chart(data[value_col])
+        # Remplacer les zéros par la moyenne (optionnel mais utile)
+        mean_val = monthly_data[monthly_data["Valeur"] != 0]["Valeur"].mean()
+        monthly_data["Valeur"].replace(0, mean_val, inplace=True)
 
-        # ARIMA config
-        st.subheader("⚙️ ARIMA Configuration")
-        p = st.number_input("AR term (p)", min_value=0, max_value=5, value=1)
-        d = st.number_input("Differencing order (d)", min_value=0, max_value=2, value=1)
-        q = st.number_input("MA term (q)", min_value=0, max_value=5, value=1)
-        steps = st.number_input("Forecast steps", min_value=1, max_value=100, value=12)
+        st.subheader("📊 Série Temporelle (Agrégée Mensuellement)")
+        st.line_chart(monthly_data["Valeur"])
 
-        if st.button("🚀 Run Forecast"):
-            with st.spinner("Training the ARIMA model..."):
-                model = ARIMA(data[value_col], order=(p, d, q))
-                fitted_model = model.fit()
+        # ARIMA params
+        st.subheader("⚙️ Paramètres du modèle ARIMA")
+        p = st.number_input("p (PACF)", min_value=0, max_value=10, value=2)
+        d = st.number_input("d (Différence)", min_value=0, max_value=2, value=0)
+        q = st.number_input("q (ACF)", min_value=0, max_value=10, value=2)
+        steps = st.number_input("Périodes à prédire", min_value=1, max_value=36, value=12)
 
-            forecast = fitted_model.forecast(steps=steps)
-            last_date = data.index[-1]
-            freq = pd.infer_freq(data.index) or 'D'
-            future_dates = pd.date_range(start=last_date + pd.Timedelta(1, unit='D'), periods=steps, freq=freq)
-            forecast_df = pd.DataFrame({'Forecast': forecast}, index=future_dates)
+        if st.button("🔮 Lancer la Prévision"):
+            model = ARIMA(monthly_data["Valeur"], order=(p, d, q))
+            model_fit = model.fit()
 
-            # Combine original and forecast for display
-            combined = pd.concat([data[value_col], forecast_df['Forecast']])
+            forecast = model_fit.get_forecast(steps=steps)
+            forecast_values = forecast.predicted_mean
+            last_date = monthly_data.index[-1]
+            forecast_index = pd.date_range(start=last_date + timedelta(days=1), periods=steps, freq='M')
+            forecast_series = pd.Series(forecast_values, index=forecast_index)
 
-            st.subheader("🔮 Forecast Results")
-            st.line_chart(combined)
+            st.success("✅ Prévision effectuée avec succès !")
+            st.subheader("📈 Résultat de la prévision")
+            st.dataframe(forecast_series)
 
-            # Download CSV
-            csv = forecast_df.reset_index().rename(columns={'index': 'Date'}).to_csv(index=False)
-            st.download_button("📥 Download Forecast CSV", data=csv, file_name='forecast.csv', mime='text/csv')
+            # Visualisation
+            st.subheader("📉 Visualisation des prévisions")
+            fig, ax = plt.subplots(figsize=(14, 5))
+            ax.plot(monthly_data["Valeur"], label="Historique")
+            ax.plot(forecast_series, color="red", label="Prévision")
+            ax.set_title("Prévision ARIMA des ventes mensuelles")
+            ax.set_xlabel("Date")
+            ax.set_ylabel("Valeurs")
+            ax.legend()
+            ax.xaxis.set_major_locator(mdates.MonthLocator())
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+            plt.xticks(rotation=45)
+            plt.grid(True)
+            st.pyplot(fig)
+
+            # Téléchargement
+            forecast_csv = forecast_series.reset_index().rename(columns={"index": "Date", 0: "Prévision"}).to_csv(index=False)
+            st.download_button("📥 Télécharger les prévisions", forecast_csv, file_name="prevision_arima.csv", mime="text/csv")
 
     except Exception as e:
-        st.error(f"❌ Error: {str(e)}")
+        st.error(f"❌ Erreur : {str(e)}")
+else:
+    st.info("Veuillez charger un fichier pour commencer.")
