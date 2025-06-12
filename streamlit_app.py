@@ -1,109 +1,73 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from statsmodels.tsa.stattools import adfuller
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 from statsmodels.tsa.arima.model import ARIMA
-import warnings
+from datetime import timedelta
 
-warnings.filterwarnings("ignore")
+# Title
+st.title("📈 Forecasting with ARIMA")
+st.write("Upload your time series data and forecast future values using the ARIMA model.")
 
-st.set_page_config(page_title="Prévision des Ventes", layout="wide")
-st.title("📈 Prévision des Ventes Mensuelles avec ARIMA")
+# Upload file (supports CSV, Excel, and TXT)
+uploaded_file = st.file_uploader("Upload a file", type=["csv", "xls", "xlsx", "txt"])
 
-# Step 1: File Upload
-uploaded_file = st.file_uploader("📤 Importer le fichier Excel des ventes", type=["xlsx"])
-
-if uploaded_file is not None:
-    vente_ligne = pd.read_excel(uploaded_file)
-    st.subheader("📋 Aperçu des données originales")
-    st.dataframe(vente_ligne.head())
-
-    # Clean the data
-    vente_ligne1 = vente_ligne.copy()
-    vente_ligne1 = vente_ligne1.drop(columns=vente_ligne1.columns[2:10])
-    vente_ligne1 = vente_ligne1.drop(columns=vente_ligne1.columns[3:])
-    vente_ligne1 = vente_ligne1.drop(columns=vente_ligne1.columns[0])
-    vente_ligne1 = vente_ligne1[vente_ligne1["Montant"] != 0]
-
-    # Convert date column
-    vente_ligne1['Date Comptabilisation'] = pd.to_datetime(vente_ligne1['Date Comptabilisation'])
-    vente_ligne1['YearMonth'] = vente_ligne1['Date Comptabilisation'].dt.to_period('M').astype(str)
-
-    # Monthly aggregated sales
-    monthly_grouped = vente_ligne1.groupby('YearMonth')['Montant'].sum().reset_index()
-
-    st.subheader("📊 Données mensuelles agrégées")
-    st.dataframe(monthly_grouped)
-
-    # ADF Test
-    adf_result = adfuller(monthly_grouped['Montant'])
-    p_value = adf_result[1]
-    st.subheader("📉 Test de stationnarité (ADF)")
-    st.write(f"**P-value** = {p_value:.5f}")
-    if p_value < 0.05:
-        st.success("✅ La série est stationnaire.")
+if uploaded_file:
+    file_name = uploaded_file.name.lower()
+    
+    if file_name.endswith(".csv") or file_name.endswith(".txt"):
+        data = pd.read_csv(uploaded_file)
+    elif file_name.endswith((".xls", ".xlsx")):
+        data = pd.read_excel(uploaded_file)
     else:
-        st.warning("⚠️ La série n’est pas stationnaire.")
+        st.error("Unsupported file type.")
+        st.stop()
 
-    # Plot ACF & PACF
-    st.subheader("📌 Analyse des corrélations ACF / PACF")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("PACF")
-        fig, ax = plt.subplots()
-        plot_pacf(monthly_grouped['Montant'], ax=ax)
-        st.pyplot(fig)
-    with col2:
-        st.write("ACF")
-        fig, ax = plt.subplots()
-        plot_acf(monthly_grouped['Montant'], ax=ax)
-        st.pyplot(fig)
+    st.subheader("📋 Uploaded Data Preview")
+    st.write(data.head())
 
-    # ARIMA Parameters
-    st.subheader("⚙️ Paramètres du modèle ARIMA")
-    p = st.number_input("p (PACF)", min_value=0, max_value=10, value=2)
-    d = st.number_input("d (Différence)", min_value=0, max_value=2, value=0)
-    q = st.number_input("q (ACF)", min_value=0, max_value=10, value=2)
+    # Let user choose the date and sales columns
+    st.subheader("🛠️ Select Columns")
+    columns = list(data.columns)
+    date_col = st.selectbox("Select the column representing **Date**", columns)
+    value_col = st.selectbox("Select the column representing **Sales/Values**", columns)
 
-    if st.button("🔮 Lancer la Prévision"):
-        # Set index and resample
-        data = vente_ligne1.copy()
-        data.set_index('Date Comptabilisation', inplace=True)
-        monthly_sales = data['Montant'].resample('M').sum()
-        mean_sales = monthly_sales[monthly_sales != 0].mean()
-        monthly_sales.replace(0, mean_sales, inplace=True)
+    try:
+        # Convert and prepare data
+        data[date_col] = pd.to_datetime(data[date_col])
+        data = data[[date_col, value_col]].sort_values(by=date_col)
+        data.set_index(date_col, inplace=True)
 
-        # ARIMA Model
-        model = ARIMA(monthly_sales, order=(p, d, q))
-        model_fit = model.fit()
+        # Plot original data
+        st.subheader("📊 Historical Data")
+        st.line_chart(data[value_col])
 
-        # Forecast
-        forecast_steps = 12
-        forecast = model_fit.get_forecast(steps=forecast_steps)
-        forecast_values = forecast.predicted_mean
-        last_date = monthly_sales.index[-1]
-        forecast_index = pd.date_range(start=last_date, periods=forecast_steps + 1, freq='M')[1:]
-        forecast_series = pd.Series(forecast_values, index=forecast_index)
+        # ARIMA config
+        st.subheader("⚙️ ARIMA Configuration")
+        p = st.number_input("AR term (p)", min_value=0, max_value=5, value=1)
+        d = st.number_input("Differencing order (d)", min_value=0, max_value=2, value=1)
+        q = st.number_input("MA term (q)", min_value=0, max_value=5, value=1)
+        steps = st.number_input("Forecast steps", min_value=1, max_value=100, value=12)
 
-        st.success("✅ Prévision effectuée avec succès !")
-        st.subheader("📈 Résultat de la prévision")
-        st.dataframe(forecast_series)
+        if st.button("🚀 Run Forecast"):
+            with st.spinner("Training the ARIMA model..."):
+                model = ARIMA(data[value_col], order=(p, d, q))
+                fitted_model = model.fit()
 
-        # Plot forecast
-        st.subheader("📉 Visualisation des prévisions")
-        fig, ax = plt.subplots(figsize=(15, 5))
-        ax.plot(monthly_sales, label='Historique des ventes')
-        ax.plot(forecast_series, color='red', label='Prévision (12 mois)')
-        ax.set_xlabel('Date')
-        ax.set_ylabel('Montant des ventes')
-        ax.set_title('Prévision des ventes mensuelles avec ARIMA')
-        ax.legend()
-        ax.xaxis.set_major_locator(mdates.MonthLocator())
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-        plt.xticks(rotation=45)
-        plt.grid(True)
-        st.pyplot(fig)
-else:
-    st.info("Veuillez importer un fichier Excel pour commencer.")
+            forecast = fitted_model.forecast(steps=steps)
+            last_date = data.index[-1]
+            freq = pd.infer_freq(data.index) or 'D'
+            future_dates = pd.date_range(start=last_date + pd.Timedelta(1, unit='D'), periods=steps, freq=freq)
+            forecast_df = pd.DataFrame({'Forecast': forecast}, index=future_dates)
+
+            # Combine original and forecast for display
+            combined = pd.concat([data[value_col], forecast_df['Forecast']])
+
+            st.subheader("🔮 Forecast Results")
+            st.line_chart(combined)
+
+            # Download CSV
+            csv = forecast_df.reset_index().rename(columns={'index': 'Date'}).to_csv(index=False)
+            st.download_button("📥 Download Forecast CSV", data=csv, file_name='forecast.csv', mime='text/csv')
+
+    except Exception as e:
+        st.error(f"❌ Error: {str(e)}")
